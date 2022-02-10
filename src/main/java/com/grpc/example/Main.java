@@ -3,6 +3,7 @@ package com.grpc.example;
 import static io.grpc.Metadata.ASCII_STRING_MARSHALLER;
 
 import com.grpc.example.PingExampleGrpc.PingExampleImplBase;
+import io.grpc.Context;
 import io.grpc.ForwardingServerCall;
 import io.grpc.ForwardingServerCallListener;
 import io.grpc.Metadata;
@@ -16,6 +17,7 @@ import io.grpc.Status;
 import io.grpc.protobuf.services.ProtoReflectionService;
 import io.grpc.stub.StreamObserver;
 import java.io.IOException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -91,18 +93,21 @@ public final class Main {
                   @Override
                   public void close(final Status status, final Metadata trailers) {
                     super.close(status, trailers);
+                    long timeRemaining =
+                        Context.current().getDeadline().timeRemaining(TimeUnit.MILLISECONDS);
                     logger.info(
-                        "{} trace-seq: {} - closed with status code: {}, desc: {}",
+                        "{} trace-seq: {} - closed with status code: {}, desc: {}, deadline remaining: {}",
                         seqNr,
                         remoteSeq,
                         status.getCode(),
-                        status.getDescription());
+                        status.getDescription(),
+                        timeRemaining);
                   }
 
                   @Override
                   public void sendHeaders(final Metadata headers) {
                     super.sendHeaders(headers);
-                    logger.info("{} - sendHeader", seqNr);
+                    logger.info("{} - sendHeader, trace-seq: {}", seqNr, remoteSeq);
                   }
                 },
                 headers)) {
@@ -110,25 +115,31 @@ public final class Main {
           @Override
           public void onHalfClose() {
             super.onHalfClose();
-            logger.info("{} - onHalfClose", seqNr);
+            logger.info("{} - onHalfClose, trace-seq: {}", seqNr, remoteSeq);
           }
 
           @Override
           public void onMessage(final ReqT message) {
             super.onMessage(message);
-            logger.info("{} - onMessage", seqNr);
+            logger.info("{} - onMessage, trace-seq: {}", seqNr, remoteSeq);
           }
 
           @Override
           public void onCancel() {
             super.onCancel();
-            logger.info("{} - onCancel", seqNr);
+            long timeRemaining =
+                Context.current().getDeadline().timeRemaining(TimeUnit.MILLISECONDS);
+            logger.info(
+                "{} - onCancel, trace-seq: {}, deadline remaining {}",
+                seqNr,
+                remoteSeq,
+                timeRemaining);
           }
 
           @Override
           public void onComplete() {
             super.onComplete();
-            logger.info("{} - onComplete", seqNr);
+            logger.info("{} - onComplete, trace-seq: {}", seqNr, remoteSeq);
           }
         };
       }

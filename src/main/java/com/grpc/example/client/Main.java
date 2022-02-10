@@ -5,14 +5,17 @@ import static io.grpc.Metadata.ASCII_STRING_MARSHALLER;
 import com.google.common.base.Stopwatch;
 import com.grpc.example.PingExampleGrpc;
 import com.grpc.example.PingRequest;
+import com.grpc.example.PingResponse;
 import io.grpc.ConnectivityState;
 import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
 import io.grpc.Status;
+import io.grpc.Status.Code;
+import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
+import io.grpc.okhttp.OkHttpChannelBuilder;
 import io.grpc.stub.MetadataUtils;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import io.grpc.stub.StreamObserver;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
@@ -28,8 +31,15 @@ public final class Main {
   private Main() {}
 
   public static void main(final String... args) throws InterruptedException {
-    var executor = Executors.newFixedThreadPool(100);
-    var channel = ManagedChannelBuilder.forAddress("127.0.0.1", 50051).usePlaintext().build();
+    ManagedChannel channel;
+    if ("okhttp".equals(System.getProperty("com.grpc.example.transport", "netty"))) {
+      logger.info("Using okhttp transport");
+      channel = OkHttpChannelBuilder.forAddress("127.0.0.1", 50051).usePlaintext().build();
+    } else {
+      logger.info("Using netty transport");
+      channel = NettyChannelBuilder.forAddress("127.0.0.1", 50051).usePlaintext().build();
+    }
+
     while (true) {
       var state = channel.getState(true);
       if (ConnectivityState.READY == state) {
@@ -37,39 +47,59 @@ public final class Main {
       }
     }
 
-    var stub = PingExampleGrpc.newBlockingStub(channel);
-    var seq = new AtomicInteger(0);
-    for (int i = 0; i < 100; i++) {
-      executor.submit(
-          () -> {
-            var started = Stopwatch.createStarted();
-            var seqStr = String.valueOf(seq.incrementAndGet());
-            try {
-              var metadata = new Metadata();
-              metadata.put(TRACE_SEQ_KEY, seqStr);
-              stub.withDeadlineAfter(100, TimeUnit.MILLISECONDS)
-                  .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata))
-                  .ping(PingRequest.newBuilder().build());
-            } catch (Exception ex) {
-              var status = Status.fromThrowable(ex);
-              logger.info("{} Status code: {}", seqStr, status.getCode());
-              logger.info("{} Status description: {}", seqStr, status.getDescription());
-            } finally {
-              started.stop();
-              logger.info(
-                  "{} - call latency {} ms", seqStr, started.elapsed(TimeUnit.MILLISECONDS));
-            }
-          });
+    var stub = PingExampleGrpc.newStub(channel);
+    var slowCalls = new AtomicInteger(0);
+    var countDownLatch = new CountDownLatch(1000);
+
+    for (int i = 0; i < 1000; i++) {
+      var started = Stopwatch.createStarted();
+      var seqStr = String.valueOf(i);
+
+      logger.info("starting call with trace-seq: {}", seqStr);
+
+      var metadata = new Metadata();
+      metadata.put(TRACE_SEQ_KEY, seqStr);
+      stub.withDeadlineAfter(100, TimeUnit.MILLISECONDS)
+          .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata))
+          .ping(
+              PingRequest.newBuilder().build(),
+              new StreamObserver<PingResponse>() {
+                @Override
+                public void onNext(PingResponse pingResponse) {}
+
+                @Override
+                public void onError(Throwable throwable) {
+                  countDownLatch.countDown();
+                  started.stop();
+                  var status = Status.fromThrowable(throwable);
+                  logger.info("{} Status code: {}", seqStr, status.getCode());
+                  logger.info("{} Status description: {}", seqStr, status.getDescription());
+                  if (status.getCode() == Code.DEADLINE_EXCEEDED) {
+                    slowCalls.incrementAndGet();
+                  }
+                }
+
+                @Override
+                public void onCompleted() {
+                  countDownLatch.countDown();
+                  started.stop();
+                  var elapsed = started.elapsed(TimeUnit.MILLISECONDS);
+                  logger.info("{} - call latency {} ms", seqStr, elapsed);
+                }
+              });
     }
 
-    awaitTermination(executor, channel);
+    awaitTermination(channel, countDownLatch, slowCalls);
   }
 
-  private static void awaitTermination(final ExecutorService executor, final ManagedChannel channel)
+  private static void awaitTermination(
+      final ManagedChannel channel,
+      final CountDownLatch countDownLatch,
+      final AtomicInteger slowCalls)
       throws InterruptedException {
-    executor.shutdown();
-    executor.awaitTermination(60, TimeUnit.SECONDS);
+    countDownLatch.await(60, TimeUnit.SECONDS);
     channel.shutdown();
     channel.awaitTermination(60, TimeUnit.SECONDS);
+    logger.info("{} calls didn't finish within the deadline", slowCalls.get());
   }
 }
