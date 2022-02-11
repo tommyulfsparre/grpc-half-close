@@ -15,6 +15,9 @@ import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 import io.grpc.okhttp.OkHttpChannelBuilder;
 import io.grpc.stub.MetadataUtils;
 import io.grpc.stub.StreamObserver;
+import io.perfmark.PerfMark;
+import io.perfmark.traceviewer.TraceEventViewer;
+import java.io.IOException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -30,7 +33,7 @@ public final class Main {
 
   private Main() {}
 
-  public static void main(final String... args) throws InterruptedException {
+  public static void main(final String... args) throws InterruptedException, IOException {
     ManagedChannel channel;
     if ("okhttp".equals(System.getProperty("com.grpc.example.transport", "netty"))) {
       logger.info("Using okhttp transport");
@@ -46,6 +49,8 @@ public final class Main {
         break;
       }
     }
+
+    PerfMark.setEnabled(true);
 
     var stub = PingExampleGrpc.newStub(channel);
     var slowCalls = new AtomicInteger(0);
@@ -96,10 +101,11 @@ public final class Main {
       final ManagedChannel channel,
       final CountDownLatch countDownLatch,
       final AtomicInteger slowCalls)
-      throws InterruptedException {
+      throws InterruptedException, IOException {
     countDownLatch.await(60, TimeUnit.SECONDS);
     channel.shutdown();
     channel.awaitTermination(60, TimeUnit.SECONDS);
     logger.info("{} calls didn't finish within the deadline", slowCalls.get());
+    TraceEventViewer.writeTraceHtml();
   }
 }
